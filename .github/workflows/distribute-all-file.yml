@@ -1,0 +1,128 @@
+name: Distribute All Files
+
+on:
+  issues:
+    types:
+      - opened
+      - edited
+
+jobs:
+  distribute-all-files:
+    if: contains(github.event.issue.labels.*.name, 'distribute-all-files')
+    runs-on: fixed-ip-runner-4core-22.04
+    strategy:
+      matrix:
+        repository: ${{ fromJson(github.event.issue.body).*.repository }}
+      max-parallel: 10
+      fail-fast: false
+    steps:
+      - name: Checkout central repository
+        uses: actions/checkout@v4
+
+      - name: Import GPG key
+        run: |
+          echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
+        env: 
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
+      - name: Add the custom gpg siging program that passes the passphrase to the gpg CLI
+        run: |
+          rm -rf /tmp/gpg.sh
+          echo '#!/bin/bash' >> /tmp/gpg.sh
+          echo 'gpg --batch --pinentry-mode=loopback --passphrase $GPG_KEY_PASSPHRASE $@' >> /tmp/gpg.sh
+          chmod +x /tmp/gpg.sh
+
+      - name: Setup git
+        run: |
+            git config --global commit.gpgsign true
+            git config --global user.signingkey $GPG_KEY_ID
+            git config --global gpg.program /tmp/gpg.sh
+        env:
+            GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+
+      - name: Setup git
+        run: |
+            git config --global user.email ${{ secrets.GIT_COMMITTER_EMAIL }}
+            git config --global user.name ${{ secrets.GIT_COMMITTER_NAME }}
+    
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: "${{ fromJSON(github.event.issue.body)[matrix.repository].organisation}}/${{ matrix.repository }}"
+          path: "./target-repo"
+          ref: "github-migration"
+          token: ${{ secrets.GH_MIGRATION_PAT }}
+
+      - name: Copy YML, PY, JSON and XLSX files
+        run: |
+          repo='${{ matrix.repository }}'
+          owner='${{ fromJSON(github.event.issue.body)[matrix.repository].organisation }}'
+          echo "Processing repository: $owner/$repo"
+          
+          branch="github-migration"
+          target_repo_path="./target-repo"
+          files_path="./distribute"
+          has_changes=false
+
+         
+          for file in $files_path/*.{yml,py,xlsx}; do
+              file_extension="${file##*.}"
+              target_folder=""
+          
+              if [ "$file_extension" == "yml" ]; then
+                  target_folder=".github/workflows"
+                  if [ ! -d "$target_repo_path/$target_folder" ]; then
+                    echo ".github/workflows folder does not exist in the target repository. Skipping YML file: $file"
+                    continue
+                  fi
+              elif [ "$file_extension" == "py" ]; then
+                  target_folder="script_migration"
+              elif [ "$file_extension" == "xlsx" ]; then
+                  target_folder="input_migration"
+              fi
+              
+              if [ -e "$target_repo_path/$target_folder/$(basename $file)" ]; then
+                  echo "File $file already exists in $target_repo_path/$target_folder/. Skipping..."
+              else
+                  if [ ! -d "$target_repo_path/$target_folder" ]; then
+                    echo "Creating folder: $target_folder"
+                    mkdir -p "$target_repo_path/$target_folder"
+                  fi
+                  
+                  cp "$file" "$target_repo_path/$target_folder/"
+                  echo "Copied $file to $target_repo_path/$target_folder/"
+                  has_changes=true
+              fi
+          done
+          
+          # Copy JSON files that match the repository name
+          for json_file in $files_path/${repo}-*spec.json; do
+              if [[ "$json_file" == *"${repo}-spec.json" || "$json_file" == *"${repo}-env-spec.json" ]]; then
+                  json_file_name=$(basename "$json_file")
+                  target_folder="json_migration"  # New target folder for JSON files
+        
+                  if [ ! -d "$target_repo_path/$target_folder" ]; then
+                      echo "Creating folder: $target_folder"
+                      mkdir -p "$target_repo_path/$target_folder"
+                  fi
+                  
+                  if [ -e "$target_repo_path/$target_folder/$json_file_name" ]; then
+                      echo "JSON file $json_file_name already exists in $target_repo_path/$target_folder/. Skipping..."
+                  else
+                      cp "$json_file" "$target_repo_path/$target_folder/"
+                      echo "Copied $json_file to $target_repo_path/$target_folder/"
+                      has_changes=true
+                  fi
+              fi
+          done
+          
+          if [ "$has_changes" = true ]; then
+            cd "$target_repo_path"
+            git add .
+            git commit -m "Distribute YML, PY, and XLSX files"
+            git push origin "$branch"
+          else
+            echo "No changes to commit. Skipping commit step."
+          fi
+        env:
+            GPG_KEY_PASSPHRASE: ${{ secrets.PASSPHRASE }}
