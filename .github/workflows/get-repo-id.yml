@@ -1,0 +1,170 @@
+name: Get Repository ID
+    
+on:
+  workflow_dispatch:
+
+jobs:
+  get-repository-id:
+    runs-on: fixed-ip-runner-4core-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_MIGRATION_PAT }}
+          path: ./source-repo
+
+      - name: Get Repository ID
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_MIGRATION_PAT}}
+          script: |
+            const fs = require('fs');
+
+            // Read repository names from repositories.txt file
+            const repoFilePath = '${{ github.workspace }}/source-repo/input/repositories.txt';
+            let repoNames = [];
+            let outputText = 'Repo_Name, Repository-ID\n';
+            try {
+                const data = fs.readFileSync(repoFilePath, 'utf8');
+                repoNames = data.trim().split('\n');
+            } catch (err) {
+                console.error(`Error reading file: ${err}`);
+            }
+                // console.log('Repositories:', repos);
+            for (const repoFullName  of repoNames) {
+
+                const [orgName, repoName] = repoFullName.split('/');
+
+                // console.log('Organization:', orgName);
+                console.log('Processing Repository:', repoName);
+                try {
+                    const data  = await github.rest.repos.get({ 
+                        owner: orgName,
+                        repo: repoName,
+                    });
+
+                    if (data.status != 200) {
+                            outputText += `${repoFullName}, API call failed with status code: ${data.status}\n`;
+                            continue;
+                    }
+                
+                    outputText += `${repoFullName}, ${data.data.id}\n`; 
+                } catch (err) {
+                    outputText += `${repoFullName}, API call errored out with error: ${err}\n`;
+                }    
+            };
+
+            // Write outputText to count_repo_objects.txt file
+            const outputPath = '${{ github.workspace }}/source-repo/output/output-repo-id.txt';
+            fs.writeFileSync(outputPath, outputText);
+
+      - name: Upload output file
+        uses: actions/upload-artifact@v3
+        with:
+          name: output-repo-id
+          path: ./source-repo/output/output-repo-id.txt
+
+  # update-repo-id:
+  #   needs: get-repository-id
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout Repository
+  #       uses: actions/checkout@v4
+  #       with:
+  #         token: ${{ secrets.GH_MIGRATION_PAT }}
+  #         path: ./source-repo
+
+  #     - name: Download output file
+  #       uses: actions/download-artifact@v3
+  #       with:
+  #         name: output-repo-id
+  #         path: ./source-repo/output
+
+  #     - name: Update Repository ID in JSON file
+  #       uses: actions/github-script@v6
+  #       with:
+  #         github-token: ${{ secrets.GH_MIGRATION_PAT}}
+  #         script: |
+  #           const fs = require('fs');
+  #           const { execSync } = require('child_process');
+
+  #           // Read repository names and IDs from output-repo-id.txt file
+  #           const repoFilePath = '${{ github.workspace }}/source-repo/output/output-repo-id.txt';
+  #           let repoData = [];
+  #           try {
+  #               const data = fs.readFileSync(repoFilePath, 'utf8');
+  #               repoData = data.trim().split('\n').slice(1).map(line => {
+  #                   const [repoName, repoId] = line.split(', ');
+  #                   return { repoName, repoId };
+  #               });
+  #           } catch (err) {
+  #               console.error(`Error reading file: ${err}`);
+  #           }
+
+  #           for (const { repoName, repoId } of repoData) {
+  #               const [orgName, repo] = repoName.split('/');
+
+  #               // Checkout the repository
+  #               execSync(`git clone -b github-migration https://${{ secrets.GH_MIGRATION_PAT }}@github.com/${orgName}/${repo}.git`);
+
+  #               // Read the JSON file
+  #               const jsonFilePath = `${repo}/json_migration/${repo}-env-spec.json`;
+  #               let jsonData;
+  #               try {
+  #                   const data = fs.readFileSync(jsonFilePath, 'utf8');
+  #                   jsonData = JSON.parse(data);
+  #               } catch (err) {
+  #                   console.error(`Error reading file: ${err}`);
+  #                   continue;
+  #               }
+
+  #               // Replace the destinationRepositoryId
+  #               for (const key in jsonData) {
+  #                   jsonData[key].destinationRepositoryId = repoId;
+  #               }
+
+  #               // Write the updated JSON data back to the file
+  #               fs.writeFileSync(jsonFilePath, JSON.stringify(jsonData, null, 2));
+
+  #               // Commit and push the changes
+  #               //execSync(`cd ${repo} && git config user.email "github-actions[bot]@users.noreply.github.com" && git config user.name "GitHub Actions" && git add . && git commit -m "Update destinationRepositoryId" && git push`);
+  #           }
+
+  #     - name: Import GPG key
+  #       run: |
+  #         echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
+  #       env: 
+  #         GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
+  #     - name: Add the custom gpg signing program that passes the passphrase to the gpg CLI
+  #       run: |
+  #           rm -rf /tmp/gpg.sh
+  #           echo '#!/bin/bash' >> /tmp/gpg.sh
+  #           echo 'gpg --batch --pinentry-mode=loopback --passphrase $GPG_KEY_PASSPHRASE $@' >> /tmp/gpg.sh
+  #           chmod +x /tmp/gpg.sh
+  
+  #     - name: Setup git
+  #       run: |
+  #           git config --global user.email ${{ secrets.GIT_COMMITTER_EMAIL }}
+  #           git config --global user.name ${{ secrets.GIT_COMMITTER_NAME }}
+  #           git config --global commit.gpgsign true
+  #           git config --global user.signingkey $GPG_KEY_ID
+  #           git config --global gpg.program /tmp/gpg.sh
+  #       env:
+  #         GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }} 
+
+  #     - name: Commit Changes
+  #       run: |
+  #           cd ${{ github.workspace }}/json_migration
+  #           if [ -n "$(git status --porcelain)" ]; then
+  #             git add .
+  #             git commit -S -m "Update destinationRepositoryId - $(date +"%Y-%m-%d %H:%M:%S")" 
+  #             git push
+  #           else
+  #             echo "No changes to commit."
+  #           fi
+  #           cd ${{ github.workspace }}
+  #       env:
+  #           GPG_KEY_PASSPHRASE: ${{ secrets.PASSPHRASE }}
+  #           working-directory: ${{ github.workspace }}
+        
