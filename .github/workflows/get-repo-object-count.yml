@@ -1,0 +1,186 @@
+name: Repository Object Count
+
+on:
+    workflow_dispatch:
+
+jobs:
+  count-repository-objects:
+    runs-on: fixed-ip-runner-4core-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_MIGRATION_PAT }}
+          path: ./source-repo
+
+      - name: Repository Object Count
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_MIGRATION_PAT}}
+          script: |
+
+            const fs = require('fs');
+
+            // Read repository names from repositories.txt file
+            const repoFilePath = '${{ github.workspace }}/source-repo/repositories.txt';
+            let repoNames = [];
+            let outputText = 'Repo_Name,Commit_Count,Issue_Count,PR_Count,Branches_Count,Releases_Count,Tags_Count\n';
+            try {
+              const data = fs.readFileSync(repoFilePath, 'utf8');
+              repoNames = data.trim().split('\n');
+            } catch (err) {
+              console.error(`Error reading file: ${err}`);
+            }
+              // console.log('Repositories:', repos);
+              const perPage = 100;
+              for (const repoFullName  of repoNames) {
+
+                  const [orgName, repoName] = repoFullName.split('/');
+
+                  // console.log('Organization:', orgName);
+                  console.log('Processing Repository:', repoName);
+
+                  let totalCommits = 0;
+                  let page = 1;
+                  while (true) {
+                  const commits = await github.rest.repos.listCommits({
+                      owner: orgName,
+                      repo: repoName,
+                      per_page: perPage,
+                      page: page++
+                  });
+                  if (commits.data.length === 0) break;
+                  totalCommits += commits.data.length;
+                  }
+                  console.log('Total Commits:', totalCommits);
+
+                  let totalOpenIssues = 0;
+                  page = 1;
+                  while (true) {
+                      const issues = await github.rest.issues.listForRepo({
+                      owner: orgName,
+                      repo: repoName,
+                      state: 'open',
+                      per_page: perPage,
+                      page: page++
+                      });
+                      if (issues.data.length === 0) break;
+                      /* Filter out pull requests from the list of open issues as - 
+                          Note: GitHub's REST API considers every pull request an issue, but not every issue is a pull request. For this reason, "Issues" endpoints may return both issues and pull requests in the response. You can identify pull requests by the pull_request key. Be aware that the id of a pull request returned from "Issues" endpoints will be an issue id.
+                      */
+                      const filteredIssues = issues.data.filter(issue => !issue.pull_request);
+                      totalOpenIssues += filteredIssues.length;
+                  }
+                  console.log('Total Open Issues (excluding pull requests):', totalOpenIssues);
+
+                  let totalPullRequests = 0;
+                  page = 1;
+                  while (true) {
+                  const pullRequests = await github.rest.pulls.list({
+                      owner: orgName,
+                      repo: repoName,
+                      state: 'open',
+                      per_page: perPage,
+                      page: page++
+                  });
+                  if (pullRequests.data.length === 0) break;
+                  totalPullRequests += pullRequests.data.length;
+                  }
+                  console.log('Total Open Pull Requests:', totalPullRequests);
+
+                  let totalBranches = 0;
+                  page = 1;
+                  while (true) {
+                  const branches = await github.rest.repos.listBranches({
+                      owner: orgName,
+                      repo: repoName,
+                      per_page: perPage,
+                      page: page++
+                  });
+                  if (branches.data.length === 0) break;
+                  totalBranches += branches.data.length;
+                  }
+                  console.log('Total Number of branches', totalBranches);
+
+                  let totalReleases = 0;
+                  page = 1;
+                  while (true) {
+                    const releases = await github.rest.repos.listReleases({
+                      owner: orgName,
+                      repo: repoName,
+                      per_page: perPage,
+                      page: page++
+                    });
+                    if (releases.data.length === 0) break;
+                    totalReleases += releases.data.length;
+                  }
+                  console.log('Total Number of releases', totalReleases);
+
+                  let totalTags = 0;
+                  page = 1;
+                  while (true) {
+                  const tags = await github.rest.repos.listTags({
+                      owner: orgName,
+                      repo: repoName,
+                      per_page: perPage,
+                      page: page++
+                  });
+                  if (tags.data.length === 0) break;
+                  totalTags += tags.data.length;
+                  }
+                  console.log('Total Number of Tags', totalTags);
+
+                  outputText += `${repoFullName},${totalCommits},${totalOpenIssues},${totalPullRequests},${totalBranches},${totalReleases},${totalTags}\n`;
+              }
+              // Write outputText to repo_object_count_EMU.txt file
+              const outputPath = '${{ github.workspace }}/source-repo/output/repo_object_count_EMU.txt';
+              fs.writeFileSync(outputPath, outputText);
+
+      - name: Upload repo_object_count_EMU.txt as artifact
+        uses: actions/upload-artifact@v4
+        with:
+            name: repo_object_count_EMU_txt
+            path: ./source-repo/output/repo_object_count_EMU.txt
+
+  convert-to-excel:
+    needs: count-repository-objects
+    runs-on: fixed-ip-runner-4core-22.04
+    steps:
+      - name: Checkout central repository
+        uses: actions/checkout@v4
+        with:
+            token: ${{ secrets.GH_MIGRATION_PAT }}
+            path: ./source-repo
+
+      - name: Install python
+        uses: actions/setup-python@v2
+        with:
+            python-version: '3.x'
+        
+      - name: Install pandas
+        run: pip install pandas openpyxl
+    
+      - name: Download repo_object_count_EMU txt file artifact
+        uses: actions/download-artifact@v4
+        with:
+            name: repo_object_count_EMU_txt
+            path: ./source-repo/output  # Download to the current directory
+
+      - name: Convert to Excel
+        run: |
+          python3 <<EOF
+          import pandas as pd
+
+          # Read the data from repo-scoped-secrets.txt
+          data = pd.read_csv('${{ github.workspace }}/source-repo/output/repo_object_count_EMU.txt', delimiter=',', names=['Repository', 'Commit_Count', 'Issue_Count', 'PR_Count','Branch_Count','Release_Count','Tag_Count'])
+          data = pd.read_csv('${{ github.workspace }}/source-repo/output/repo_object_count_EMU.txt', delimiter=',')
+
+          # Save as Excel file
+          data.to_excel('${{ github.workspace }}/source-repo/output/repo_object_count_EMU.xlsx', index=False, header=True)
+          EOF
+      
+      - name: Upload repo_object_count_EMU excel as artifact
+        uses: actions/upload-artifact@v4
+        with:
+            name: repo_object_count_EMU_excel
+            path: ./source-repo/output/repo_object_count_EMU.xlsx
