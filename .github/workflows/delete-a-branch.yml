@@ -1,0 +1,65 @@
+name: Delete Branch in Repos
+
+on:
+  issues:
+    types:
+      - opened
+      - edited
+
+# Expected issue body input should be structured as follows:
+#     {
+#         "rep01": {
+#             "repository": "rep01",
+#             "organisation": "org01"
+#         },
+#         "rep02": {
+#             "repository": "rep02",
+#             "organisation": "org02"
+#         } 
+#     }
+
+jobs:
+  delete-branch:
+    if: contains(github.event.issue.labels.*.name, 'branch-deletion')
+    runs-on: fixed-ip-runner-4core-22.04
+    strategy:
+      matrix:
+        repository: ${{ fromJson(github.event.issue.body).*.repository }} # Using JSON to pass the repo info
+      max-parallel: 10
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Delete branch
+        run: |
+          repo='${{ matrix.repository }}'
+          org='${{ fromJSON(github.event.issue.body)[matrix.repository].organisation }}'
+
+          echo "Processing repository: $org/$repo"
+
+          # Check if the branch exists
+          branch_info=$(curl -s -H "Authorization: token ${{ secrets.GH_MIGRATION_PAT }}" \
+              "https://api.github.com/repos/$org/$repo/branches/github-migration")
+
+          branch_name=$(echo "$branch_info" | jq -r '.name')
+
+          if [ "$branch_name" == "github-migration" ]; then
+            # Delete the branch
+            status_code=$(curl -X DELETE -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${{ secrets.GH_MIGRATION_PAT }}" \
+                "https://api.github.com/repos/$org/$repo/git/refs/heads/github-migration")
+
+            #echo "Status code is: $status_code"
+
+            if [ "$status_code" -eq 204 ]; then
+                echo "Branch 'github-migration' deleted in $org/$repo"
+            else
+                echo "Failed to delete branch 'github-migration' in $org/$repo. Status code: $status_code"
+            fi
+          else
+            echo "Branch 'github-migration' not found in $org/$repo"
+          fi
