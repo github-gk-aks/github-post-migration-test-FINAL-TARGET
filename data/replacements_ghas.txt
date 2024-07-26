@@ -1,0 +1,2 @@
+github-gk-aks/firstgithubrepo	.github/workflows/ghas-analysis.yml	master	[javascript]	S
+github-gk-aks/secondgithubrepo	.github/workflows/ghas_analysis.yml	master	[java]	M
