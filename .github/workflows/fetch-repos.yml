@@ -1,0 +1,45 @@
+name: Fetch Repositories from EMU
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch-repos:
+    runs-on: fixed-ip-runner-4core-22.04
+    env:
+        GK_PAT: ${{ secrets.GH_MIGRATION_PAT }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.x
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests
+
+    - name: Fetch Repositories
+      run: python files/fetch_repos.py
+
+    # - name: Display Repo List
+    #   run: cat repo_list.txt
+
+    # - name: Commit results.txt back to the repository
+    #   run: |
+    #      git config user.email ${{ secrets.GIT_COMMITTER_EMAIL }}
+    #      git config user.name ${{ secrets.GIT_COMMITTER_NAME }}
+    #      git pull
+    #      git add active_repo_list.txt archived_repo_list.txt
+    #      git commit -m "Add repo_list.txt"
+    #      git push    
+
+    - name: Upload Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: fetch-repo
+        path: ${{ github.workspace }}/*_repo*.txt
