@@ -1,0 +1,27 @@
+name: Get Artifact
+
+on:
+  workflow_dispatch:
+
+
+jobs:
+  get-artifact:
+    name: Get Artifact
+    timeout-minutes: 5
+    runs-on: fixed-ip-runner-4core-22.04
+    environment: preprod
+    steps:
+      - name: Create Artifact
+        run: |
+          echo 'SHARED_READ_WRITE_PAT_REPO_WORKFLOW_PACKAGES is : ${{ secrets.SHARED_READ_WRITE_PAT_REPO_WORKFLOW_PACKAGES }}' >> artifact.txt
+          # echo 'AWS_DEPLOYMENT_ROLE is : ${{ secrets.AWS_DEPLOYMENT_ROLE }}' >> artifact.txt
+          # echo 'AWS_DEPLOYMENT_SECRET_KEY is : ${{ secrets.AWS_DEPLOYMENT_SECRET_KEY }}' >> artifact.txt
+          # echo 'EXECUTION_ROLE is : ${{ secrets.EXECUTION_ROLE }}' >> artifact.txt
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: artifact
+          path: artifact.txt
+          retention-days: 1
