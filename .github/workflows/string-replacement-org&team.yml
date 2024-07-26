@@ -1,0 +1,207 @@
+#This worklfow action file is to dispatch request to replace strings related to old github organization name. The dispatch is divided into multiple steps with a time gap of 90 seconds. The first dispatch basically replaces Org/Repo scenario, the second dispatch replaces Org/Teams scenario, third dispatch replaces Org/teams/Teams_name scenario and last dispatch repalces Org only scenarios. The dispatch has to run in sequence and it also will not touch any scnario that includes repo not in scope for example Legal-General-Group-Digital/cf-tf-s3-module etc
+name: String Replacement 
+
+on:
+  issues:
+    types:
+      - opened
+      - edited
+
+# expected issue body input should be structured as follows:
+  #     {
+  #         "rep01": {
+  #             "repository": "rep01",
+  #             "organisation": "org01"
+  #         },
+  #         "rep02": {
+  #             "repository": "rep02",
+  #             "organisation": "org02"
+  #         } 
+  #     }
+
+jobs:
+  trigger-repo-workflows:
+    if: contains(github.event.issue.labels.*.name, 'replace-string-all')
+    runs-on: fixed-ip-runner-4core-22.04
+    strategy:  
+      matrix:
+        repository: ${{ fromJson(github.event.issue.body).*.repository }}  # rep01, repo02
+      fail-fast: false
+      max-parallel: 10
+    steps:
+      - name: Checkout Central Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_MIGRATION_PAT }}
+    
+      - name: Trigger String Replace org/repo Workflows in Other Repositories
+        id: step-1
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_MIGRATION_PAT }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: '${{ fromJSON(github.event.issue.body)[matrix.repository].organisation }}',
+              repo: '${{ matrix.repository }}',
+              workflow_id: 'replace-string-org-repo.yml',
+              ref: 'github-migration'
+            });
+
+      - name: Wait for 1/2 minute
+        run: sleep 15
+
+      - name: Wait for String Replace org/repo Workflow Run to Complete
+        id: wait-for-workflow1
+        run: |
+          owner='${{ fromJSON(github.event.issue.body)[matrix.repository].organisation }}'
+          repo='${{ matrix.repository }}'
+          branch='github-migration'
+          response=$(curl -s \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ secrets.GH_MIGRATION_PAT }}" \
+            "https://api.github.com/repos/$owner/$repo/actions/runs?branch=$branch&event=workflow_dispatch&per_page=1&sort=created&direction=desc")
+          workflow_run_id=$(echo "$response" | jq -r '.workflow_runs[0].id')
+          workflow_name=$(echo "$response" | jq -r '.workflow_runs[0].name')
+          echo "Workflow Run ID: $workflow_run_id"
+          echo "Workflow Name: $workflow_name"
+
+          status="queued"
+          conclusion="null"
+          while [[ "$status" != "completed" ]]; do
+            sleep 10
+            response=$(curl -s \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: Bearer ${{ secrets.GH_MIGRATION_PAT }}" \
+              "https://api.github.com/repos/$owner/$repo/actions/runs/$workflow_run_id")
+            status=$(echo "$response" | jq -r '.status')
+            conclusion=$(echo "$response" | jq -r '.conclusion')
+            echo "Status: $status, Conclusion: $conclusion"
+          done
+
+          if [ "$conclusion" != "success" ]; then
+            echo "Workflow run failed or cancelled. Exiting..."
+            exit 1
+          else
+            echo "Workflow run completed successfully."
+          fi
+
+      - name: Trigger String Replace Team Only Workflows in Other Repositories
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_MIGRATION_PAT }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: '${{ fromJSON(github.event.issue.body)[matrix.repository].organisation }}',
+              repo: '${{ matrix.repository }}',
+              workflow_id: 'replace-string-team-only.yml',
+              ref: 'github-migration',
+              inputs: {
+                repository: '${{ matrix.repository }}'
+              }
+            });
+
+      - name: Wait for 1/2 minute
+        run: sleep 15
+
+      - name: Wait for String Replace Team Only Workflow Run to Complete
+        id: wait-for-workflow2
+        run: |
+          owner='${{ fromJSON(github.event.issue.body)[matrix.repository].organisation }}'
+          repo='${{ matrix.repository }}'
+          branch='github-migration'
+          response=$(curl -s \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ secrets.GH_MIGRATION_PAT }}" \
+            "https://api.github.com/repos/$owner/$repo/actions/runs?branch=$branch&event=workflow_dispatch&per_page=1&sort=created&direction=desc")
+          workflow_run_id=$(echo "$response" | jq -r '.workflow_runs[0].id')
+          workflow_name=$(echo "$response" | jq -r '.workflow_runs[0].name')
+          echo "Workflow Run ID: $workflow_run_id"
+          echo "Workflow Name: $workflow_name"
+
+          status="queued"
+          conclusion="null"
+          while [[ "$status" != "completed" ]]; do
+            sleep 10
+            response=$(curl -s \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: Bearer ${{ secrets.GH_MIGRATION_PAT }}" \
+              "https://api.github.com/repos/$owner/$repo/actions/runs/$workflow_run_id")
+            status=$(echo "$response" | jq -r '.status')
+            conclusion=$(echo "$response" | jq -r '.conclusion')
+            echo "Status: $status, Conclusion: $conclusion"
+          done
+
+          if [ "$conclusion" != "success" ]; then
+            echo "Workflow run failed or cancelled. Exiting..."
+            exit 1
+          else
+            echo "Workflow run completed successfully."
+          fi
+
+      - name: Trigger String Replace Team URL Workflows in Other Repositories
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_MIGRATION_PAT }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: '${{ fromJSON(github.event.issue.body)[matrix.repository].organisation }}',
+              repo: '${{ matrix.repository }}',
+              workflow_id: 'replace-string-team-url.yml',
+              ref: 'github-migration',
+              inputs: {
+                repository: '${{ matrix.repository }}'
+              }
+            });
+
+      - name: Wait for 1/2 minute
+        run: sleep 15
+
+      - name: Wait for String Replace Team URL Workflow Run to Complete
+        id: wait-for-workflow3
+        run: |
+          owner='${{ fromJSON(github.event.issue.body)[matrix.repository].organisation }}'
+          repo='${{ matrix.repository }}'
+          branch='github-migration'
+          response=$(curl -s \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ secrets.GH_MIGRATION_PAT }}" \
+            "https://api.github.com/repos/$owner/$repo/actions/runs?branch=$branch&event=workflow_dispatch&per_page=1&sort=created&direction=desc")
+          workflow_run_id=$(echo "$response" | jq -r '.workflow_runs[0].id')
+          workflow_name=$(echo "$response" | jq -r '.workflow_runs[0].name')
+          echo "Workflow Run ID: $workflow_run_id"
+          echo "Workflow Name: $workflow_name"
+
+          status="queued"
+          conclusion="null"
+          while [[ "$status" != "completed" ]]; do
+            sleep 10
+            response=$(curl -s \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: Bearer ${{ secrets.GH_MIGRATION_PAT }}" \
+              "https://api.github.com/repos/$owner/$repo/actions/runs/$workflow_run_id")
+            status=$(echo "$response" | jq -r '.status')
+            conclusion=$(echo "$response" | jq -r '.conclusion')
+            echo "Status: $status, Conclusion: $conclusion"
+          done
+
+          if [ "$conclusion" != "success" ]; then
+            echo "Workflow run failed or cancelled. Exiting..."
+            exit 1
+          else
+            echo "Workflow run completed successfully."
+          fi
+
+      - name: Trigger String Replace Org Only Workflows in Other Repositories
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_MIGRATION_PAT }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: '${{ fromJSON(github.event.issue.body)[matrix.repository].organisation }}',
+              repo: '${{ matrix.repository }}',
+              workflow_id: 'replace-string-org-only.yml',
+              ref: 'github-migration',
+              inputs: {
+                repository: '${{ matrix.repository }}'
+              }
+            });
