@@ -1,0 +1,188 @@
+name: Replace GHAS ANALYSIS
+on:
+  workflow_dispatch:
+
+jobs:
+  replace-ghas-analysis:
+    runs-on: fixed-ip-runner-4core-22.04
+
+    steps:
+      - name: Checkout central repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_MIGRATION_PAT }}
+          path: ./source-repo
+
+      - name: Check if output directory exists
+        run: |
+          if [ ! -d "${{ github.workspace }}/source-repo/output" ]; then
+            echo "Output directory does not exist. Creating..."
+            mkdir -p "${{ github.workspace }}/source-repo/output"
+          else
+            echo "Output directory already exists."
+          fi
+      # Inluded the below step because I was getting the below error on re-running the job from workflow log
+
+      #error: The following untracked working tree files would be overwritten by merge:
+      #output/replace-ghas-output-20Feb2024.txt
+      #Please move or remove them before you merge.
+      #Aborting ...
+      #Updating d04a7a4..6526f56
+      #Since re-run of the workflow uses the same commit SHA and Git ref, it was not aware of the latest commit to the central repository which basically had the latest changes to output file.continue-on-error.continue-on-error.
+      #So on rerunning the workflow the output file got changed and on pulling the changes ( the changes from last run), there was a merge conflict
+      - name: Git Pull the latest changes from central repository
+        run: |
+          cd "${{ github.workspace }}/source-repo/output"
+          git pull origin main
+          cd "${{ github.workspace }}"
+
+      - name: Setup Committer Email and Name
+        run: |
+          git config --global user.email ${{ secrets.GIT_COMMITTER_EMAIL }}
+          git config --global user.name ${{ secrets.GIT_COMMITTER_NAME }}
+
+      - name: Import GPG key
+        run: |
+          echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
+        env: 
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
+      - name: Add the custom gpg signing program that passes the passphrase to the gpg CLI
+        run: |
+          rm -rf /tmp/gpg.sh
+          echo '#!/bin/bash' >> /tmp/gpg.sh
+          echo 'gpg --batch --pinentry-mode=loopback --passphrase $GPG_KEY_PASSPHRASE $@' >> /tmp/gpg.sh
+          chmod +x /tmp/gpg.sh
+
+      - name: Setup git
+        run: |
+          git config --global user.email ${{ secrets.GIT_COMMITTER_EMAIL }}
+          git config --global user.name ${{ secrets.GIT_COMMITTER_NAME }}
+          git config --global commit.gpgsign true
+          git config --global user.signingkey $GPG_KEY_ID
+          git config --global gpg.program /tmp/gpg.sh
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+
+      - name: Iterate Over Repos
+        run: |
+          mapfile -t repositories < <(awk '{print $1}' "./source-repo/data/replacements_ghas.txt")
+          for repo in "${repositories[@]}"; do
+            echo "Processing repository: $repo"
+            
+            # Clone target repository
+            git clone --depth 1 -b "github-migration" "https://${{ secrets.GH_MIGRATION_PAT }}@github.com/$repo.git" "./target-repo"
+        
+              grep "^$repo" "${{ github.workspace }}/source-repo/data/replacements_ghas.txt" | while IFS=$'\t' read -r _ file default_branch language occurance; do
+              echo "Processing file: $file, Default Branch: $default_branch, Language: $language, occurance: $occurance"
+              
+              # Remove leading and trailing spaces, and replace single quotes with double quotes
+              cleaned_language=$(echo "$language" | tr -d "[:space:]" | sed "s/\[//; s/\]//")
+              echo "Cleaned Language String: $cleaned_language"
+
+              # Convert the string to an array
+              #IFS=, read -ra languages_array <<< "${cleaned_language:1:${#cleaned_language}-2}"
+              IFS=, read -ra languages_array <<< "$(echo "$cleaned_language")" #| tr -d '"')"
+              #echo "Final Cleaned Array: ${languages_array[@]}"
+
+              # Check if the specified file exists
+              if [ -f "./target-repo/$file" ]; then
+                echo "File $file found. Proceeding with replacements."    
+                echo "Debug: Checking Default Branch - $default_branch"
+                echo "Debug: Original Language String - $language"
+                echo "Debug: Cleaned Language String - $cleaned_language"
+                echo "Debug: Final Cleaned Array - ${languages_array[@]}"
+                echo "Debug: Occurance Parameter - $occurance"
+
+                # Based on the default branch, occurance and the language set, the particular codeql file is copied and then remaved to codeql-analysis.yml
+                if [[ "$default_branch" == "main" || "$default_branch" == "master" ]]; then
+                  if [[ "$occurance" == "S" || "$occurance" == "M" ]]; then
+                      case "${languages_array[*]}" in
+                          "go")
+                              if cp "./source-repo/data/codeql-analysis_${default_branch}_go_${occurance}.yml" "./target-repo/.github/workflows/codeql-analysis.yml" >> "${{ github.workspace }}/source-repo/output/replace-ghas-errors.txt" 2>&1; then
+                                echo "File codeql-analysis_${default_branch}_go_${occurance}.yml copied successfully."
+                                echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; File codeql-analysis_${default_branch}_go_${occurance}.yml copied successfully" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+                                rm -f "./target-repo/$file"
+                              else
+                                error_message=$(tail -n 1 "${{ github.workspace }}/source-repo/output/replace-ghas-errors.txt")
+                                echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; Failed to Copy codeql-analysis_${default_branch}_go_${occurance}.yml File. ; $error_message" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+                              fi
+                              ;;
+                          "java")
+                              if cp "./source-repo/data/codeql-analysis_${default_branch}_java_${occurance}.yml" "./target-repo/.github/workflows/codeql-analysis.yml" >> "${{ github.workspace }}/source-repo/output/replace-ghas-errors.txt" 2>&1; then
+                                echo "File codeql-analysis_${default_branch}_java_${occurance}.yml copied successfully."
+                                echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; File codeql-analysis_${default_branch}_java_${occurance}.yml copied successfully" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+                                rm -f "./target-repo/$file"
+                              else
+                                error_message=$(tail -n 1 "${{ github.workspace }}/source-repo/output/replace-ghas-errors.txt")
+                                echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; Failed to Copy codeql-analysis_${default_branch}_java_${occurance}.yml File. ; $error_message" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+                              fi
+                              ;;
+                          "javascript go")
+                              if cp "./source-repo/data/codeql-analysis_${default_branch}_javascript_go_${occurance}.yml" "./target-repo/.github/workflows/codeql-analysis.yml" >> "${{ github.workspace }}/source-repo/output/replace-ghas-errors.txt" 2>&1; then
+                                echo "File codeql-analysis_${default_branch}_javascript_go_${occurance}.yml copied successfully."
+                                echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; File codeql-analysis_${default_branch}_javascript_go_${occurance}.yml copied successfully" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+                                rm -f "./target-repo/$file"
+                              else
+                                error_message=$(tail -n 1 "${{ github.workspace }}/source-repo/output/replace-ghas-errors.txt")
+                                echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; Failed to Copy codeql-analysis_${default_branch}_javascript_go_${occurance}.yml File. ; $error_message" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+                              fi
+                              ;;
+                          "javascript")
+                              if cp "./source-repo/data/codeql-analysis_${default_branch}_javascript_${occurance}.yml" "./target-repo/.github/workflows/codeql-analysis.yml" >> "${{ github.workspace }}/source-repo/output/replace-ghas-errors.txt" 2>&1; then
+                                echo "File codeql-analysis_${default_branch}_javascript_${occurance}.yml copied successfully."
+                                echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; File codeql-analysis_${default_branch}_javascript_${occurance}.yml copied successfully" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+                                rm -f "./target-repo/$file"
+                              else
+                                error_message=$(tail -n 1 "${{ github.workspace }}/source-repo/output/replace-ghas-errors.txt")
+                                echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; Failed to Copy codeql-analysis_${default_branch}_javascript_${occurance}.yml File. ; $error_message" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+                              fi
+                              ;;
+                          *)
+                              echo "Unsupported Languages"
+                              echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; Unsupported Language" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt" 
+                              ;;
+                      esac
+                      #rm -f "./target-repo/$file"
+                  else
+                      echo "Unsupported occurance parameter"
+                      echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; Unsupported occurance parameter" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+                  fi
+                else
+                  echo "Unsupported default branch parameter"
+                  echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; Unsupported default branch parameter" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+                fi               
+              else
+                echo "File $file not found in repository $repo."
+                echo "$repo ; $default_branch ; ${languages_array[*]} ; $occurance ; $file not found in the repository" >> "${{ github.workspace }}/source-repo/output/replace-ghas-output-$(date +"%d%b%y").txt"
+              fi
+            done
+
+            cd "./target-repo"
+            if [ -n "$(git status --porcelain)" ]; then
+              git pull origin github-migration
+              git add .
+              git commit -S -m "Copy codeql-analysis.yml file - $(date +"%Y-%m-%d %H:%M:%S")"
+              git push origin github-migration
+            else
+              echo "There are no changes to commit"
+            fi
+
+            # Clean up
+            cd ..
+            rm -rf "./target-repo"
+            #cd ../..
+          done
+
+          cd "${{ github.workspace }}/source-repo/output"
+          if [ -n "$(git status --porcelain)" ]; then
+              git pull origin main
+              git add replace-ghas-output-$(date +"%d%b%y").txt
+              git commit -S -m "Add Output File - $(date +"%Y-%m-%d %H:%M:%S")" 
+              git push origin main
+          else
+              echo "There are no changes to commit."
+          fi
+        env:
+          GPG_KEY_PASSPHRASE: ${{ secrets.PASSPHRASE }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
