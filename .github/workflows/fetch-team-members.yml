@@ -1,0 +1,46 @@
+name: Fetch Teams, Members and their Permissions
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch-teams-members:
+    runs-on: fixed-ip-runner-4core-22.04
+    env:
+        GK_PAT: ${{ secrets.GH_MIGRATION_PAT }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_MIGRATION_PAT  }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.x
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install openpyxl requests
+
+      - name: Fetch Teams and Members
+        run: python files/fetch_team_members.py
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: teams_members_permissions.xlsx
+          path: teams_members_permissions.xlsx
+          retention-days: 1
+
+      # - name: Commit result back to the repository
+      #   run: |
+      #       git config user.email ${{ secrets.GIT_COMMITTER_EMAIL }}
+      #       git config user.name ${{ secrets.GIT_COMMITTER_NAME }}
+      #       git pull
+      #       git add teams_members_permissions.xlsx
+      #       git commit -m "Add teams_members_permissions.xlsx - $(date +"%Y-%m-%d %H:%M:%S")"
+      #       git push    
