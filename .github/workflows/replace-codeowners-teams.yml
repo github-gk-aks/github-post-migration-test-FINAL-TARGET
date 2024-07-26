@@ -1,0 +1,109 @@
+name: Replace Teams in CODEOWNERS
+
+on:
+  issues:
+    types:
+      - opened
+      - edited
+
+jobs:
+  replace-teams:
+    if: contains(github.event.issue.labels.*.name, 'codeowner-replace')
+    runs-on: fixed-ip-runner-4core-22.04
+
+    strategy:
+      matrix:
+        repository: ${{ fromJson(github.event.issue.body).*.repository }}
+      max-parallel: 1
+
+    steps:
+      - name: Checkout central repository
+        uses: actions/checkout@v4
+        with:
+            token: ${{ secrets.GH_MIGRATION_PAT }}
+
+      - name: Identify Organization
+        id: identify-org
+        run: |
+            echo "::set-output name=organization::${{ fromJSON(github.event.issue.body)[matrix.repository].organisation }}"
+
+      - name: Read Teams from Excel File
+        id: read-teams
+        run: |
+          python -m pip install openpyxl
+          organization="${{ steps.identify-org.outputs.organization }}"
+          if [ "$organization" == "Legal-and-General-Group-Shared" ]; then
+            python files/read_teams_shared.py
+          elif [ "$organization" == "Legal-and-General-Group-Confidential" ]; then
+            python files/read_teams_confidential.py
+          else
+            echo "Unsupported organization: $organization"
+            exit 1
+          fi
+
+      - name: Show Teams Output
+        run: |
+          echo "TEAMS: ${{ steps.read-teams.outputs.teams }}"
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: "${{ fromJSON(github.event.issue.body)[matrix.repository].organisation}}/${{ matrix.repository }}"
+          path: "./target-repo"
+          ref: "github-migration"
+          token: ${{ secrets.GH_MIGRATION_PAT }}
+
+      - name: Replace Teams in CODEOWNERS
+        run: |
+          export CODEOWNERS_LOCATION='${{ fromJSON(github.event.issue.body)[matrix.repository].codeownerslocation }}'
+          export TEAMS="${{ steps.read-teams.outputs.teams }}"
+          export TEAMS="${TEAMS//\'/\"}"
+          echo "TEAMS: $TEAMS"
+          python files/replace_teams.py
+
+      - name: Import GPG key
+        run: |
+          echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
+        env: 
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+    
+      - name: Add the custom gpg siging program that passes the passphrase to the gpg CLI
+        run: |
+            rm -rf /tmp/gpg.sh
+            echo '#!/bin/bash' >> /tmp/gpg.sh
+            echo 'gpg --batch --pinentry-mode=loopback --passphrase $GPG_KEY_PASSPHRASE $@' >> /tmp/gpg.sh
+            chmod +x /tmp/gpg.sh
+
+      - name: Setup git
+        run: |
+            git config --global commit.gpgsign true
+            git config --global user.signingkey $GPG_KEY_ID
+            git config --global gpg.program /tmp/gpg.sh
+        env:
+            GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+
+      - name: Check for Changes
+        id: check_changes
+        run: |
+          cd ./target-repo
+          if git diff --quiet; then
+            echo "No changes to commit. Skipping commit step."
+            echo "::set-output name=changes::false"
+          else
+            echo "::set-output name=changes::true"
+          fi
+        shell: bash
+
+      - name: Commit and Push Changes
+        if: steps.check_changes.outputs.changes == 'true'
+        run: |
+          cd ./target-repo
+          git config user.email ${{ secrets.GIT_COMMITTER_EMAIL }}
+          git config user.name ${{ secrets.GIT_COMMITTER_NAME }}
+          git pull origin github-migration
+          git add .
+          git commit -S -m "Replace teams in CODEOWNERS - $(date +"%Y-%m-%d %H:%M:%S")"
+          git push origin github-migration
+        env:
+            GITHUB_TOKEN: ${{ secrets.GH_MIGRATION_PAT }}
+            GPG_KEY_PASSPHRASE: ${{ secrets.PASSPHRASE }}
